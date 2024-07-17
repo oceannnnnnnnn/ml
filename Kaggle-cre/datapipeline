@@ -1,1 +1,262 @@
 import pandas as pd
+import numpy as np
+import gc
+from sklearn.feature_selection import mutual_info_classif
+from category_encoders import MEstimateEncoder
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+#mutual_information特征列排序
+def mi_scores(X,y):
+    for col in X.columns:
+        if X[col].dtype in ['category','object']:
+            X[col],_=X[col].factorize()
+    discrete_features=X.dtypes==int
+    mi_scores=mutual_info_classif(X,y,discrete_features=discrete_features)
+    mi_scores=pd.DataFrame({'MI Scores':mi_scores},index=X.columns)
+    mi_scores=mi_scores.sort_values(by='MI Scores',ascending=False)
+    return mi_scores
+#更改属性降低内存
+def set_table_dtypes(df):
+    for col in df.columns:
+        if col in ["case_id", "WEEK_NUM", "num_group1", "num_group2"]:
+            df[col] = df[col].astype('int32')  # 使用更小的整数类型
+        elif col in ["date_decision"]:
+            df[col] = pd.to_datetime(df[col])  # 转换为datetime类型
+        elif col[-1] in ("P", "A"):
+            df[col] = df[col].astype('float32')  # 使用更小的浮点数类型
+        elif col[-1] in ("M",):
+            df[col] = df[col].astype('category')  # 使用压缩编码的category类型
+        elif df[col].dtype == bool:
+            df[col] = df[col].astype('int32')  # 使用更小的整数类型
+        elif col[-1] in ("D",):
+            df[col] = pd.to_datetime(df[col])  # 转换为datetime类型
+       
+        # 将所有的float64类型转换为float32类型
+        if df[col].dtype == 'float64':
+            df[col] = df[col].astype('float32')
+        # 将所有的int64类型转换为int32类型
+        elif df[col].dtype == 'int64':
+            df[col] = df[col].astype('int32')
+    
+def change32(df):
+    for col in df.columns:
+        # 将所有的float64类型转换为float32类型
+        if df[col].dtype == 'float64':
+            df[col] = df[col].astype('float32')
+        # 将所有的int64类型转换为int32类型
+        elif df[col].dtype == 'int64':
+            df[col] = df[col].astype('int32')
+    return df
+#日期处理，将所有日期特征，计算与当前时间步的时间间隔
+def handle_dates(df):
+    df=pd.merge(df,base[['case_id','date_decision']],on='case_id',how='left')
+    for col in df.columns:
+        if col in ["date_decision"]:
+            df[col] = pd.to_datetime(df[col])
+           
+        if col.endswith("D"):
+            new_col=col+'_diff'
+            df[new_col] = (df["date_decision"]-df[col]).dt.days
+            df=df.drop(columns=[col])
+    df = df.drop(columns=['date_decision'])
+    return df
+#mi-scores排序
+def miscores_index(df,base):
+    test=df.dropna()
+    test=pd.merge(test,base[['case_id','target']],on='case_id',how='left')
+    X=test.sample(frac=0.5)
+    y=X.pop('target')
+    return mi_scores(X,y).query('`MI Scores`>=0.005').index.tolist()
+def miscores_index_all(df,base):
+    test=df.dropna()
+    test=pd.merge(test,base[['case_id','target']],on='case_id',how='left')
+    X=test.sample(frac=0.5)
+    y=X.pop('target')
+    return mi_scores(X,y)
+
+#特征工程transformation部分
+def num_expr(df):
+    for col in df.columns:
+        if col.endswith(("P", "A")) and col not in ["target", "case_id", "WEEK_NUM", 'num_group1', 'num_group2']:
+            grouped_series = df.groupby(group)[col]
+            df[f"{col}_max"] = grouped_series.transform('max')
+            df[f"{col}_median"] = grouped_series.transform('median')
+            df[f"{col}_mean"] = grouped_series.transform('mean')
+            df[f"{col}_first"] = grouped_series.transform('first')
+            df[f"{col}_last"] = grouped_series.transform('last')
+            df.drop(columns=[col], inplace=True)  # 删除原始列
+
+def date_expr(df):
+    for col in df.columns:
+        if col.endswith("D") and col not in ["target", "case_id", "WEEK_NUM", 'num_group1', 'num_group2']:
+            grouped_series = df.groupby(group)[col]
+            df[f"{col}_max"] = grouped_series.transform('max')
+            df[f"{col}_mean"] = grouped_series.transform('mean')
+            df[f"{col}_last"] = grouped_series.transform('last')
+            df.drop(columns=[col], inplace=True)  # 删除原始列
+
+def str_expr(df):
+    for col in df.columns:
+        if col.endswith("M") and col not in ["target", "case_id", "WEEK_NUM", 'num_group1', 'num_group2']:
+            grouped_series = df.groupby(group)[col]
+            df[f"{col}_count"] = grouped_series.transform('count')
+            df[f"{col}_n"] = grouped_series.transform('nunique')
+            df[f"{col}_first"] = grouped_series.transform('first')
+            df[f"{col}_last"] = grouped_series.transform('last')
+            df.drop(columns=[col], inplace=True)  # 删除原始列
+
+def other_expr(df):
+    for col in df.columns:
+        if col.endswith(("T", "L")) and col not in ["target", "case_id", "WEEK_NUM", 'num_group1', 'num_group2']:
+            grouped_series = df.groupby(group)[col]
+            df[f"{col}_max"] = grouped_series.transform('max')
+            df[f"{col}_median"] = grouped_series.transform('median')
+            df[f"{col}_mean"] = grouped_series.transform('mean')
+            df[f"{col}_first"] = grouped_series.transform('first')
+            df[f"{col}_last"] = grouped_series.transform('last')
+            df.drop(columns=[col], inplace=True)  # 删除原始列
+
+def count_expr(df):
+    for col in df.columns:
+        if "num_group" in col and col not in ["target", "case_id", "WEEK_NUM", 'num_group1', 'num_group2']:
+            grouped_series = df.groupby(group)[col]
+            df[f"{col}_max"] = grouped_series.transform('max')
+  
+            df[f"{col}_mean"] = grouped_series.transform('mean')
+
+            df[f"{col}_last"] = grouped_series.transform('last')
+            df.drop(columns=[col], inplace=True)  # 删除原始列
+
+
+def transform_cols(df, group,df_name):
+    num_cols = df.select_dtypes(include=['int', 'float']).columns
+    obj_cols = df.select_dtypes(include=['object', 'category']).columns
+
+    # 处理数值型特征
+    for col in num_cols:
+        if col not in ["target", "case_id", "WEEK_NUM", 'num_group1', 'num_group2']:
+            grouped_series = df.groupby(group)[col]
+            df[f"{col}_max"] = grouped_series.transform('max')
+            df[f"{col}_median"] = grouped_series.transform('median')
+            df[f"{col}_mean"] = grouped_series.transform('mean')
+            df[f"{col}_first"] = grouped_series.transform('first')
+            df[f"{col}_last"] = grouped_series.transform('last')
+            df.drop(columns=[col], inplace=True)  # 删除原始列
+
+    # 处理非数值型特征
+    for col in obj_cols:
+        if col not in ["target", "case_id", "WEEK_NUM", 'num_group1', 'num_group2']:
+            grouped_series = df.groupby(group)[col]
+            df[f"{col}_count"] = grouped_series.transform('count')
+            df[f"{col}_n"] = grouped_series.transform('nunique')
+            df[f"{col}_first"] = grouped_series.transform('first')
+            df[f"{col}_last"] = grouped_series.transform('last')
+            df.drop(columns=[col], inplace=True)  # 删除原始列
+
+    # 处理包含'num_group'的特征列
+    for col in df.columns:
+        if 'num_group' in col:
+            grouped_series = df.groupby(group)[col]
+            df[f"{col}_{df_name}_max"] = grouped_series.transform('max')
+            df[f"{col}_{df_name}_count"] = grouped_series.transform('count')
+            df.drop(columns=[col],inplace=True)
+
+
+
+#缺失值处理
+def miss_sparse(df):
+        for col in df.columns:
+            if col not in ["target", "case_id", "WEEK_NUM"]:
+                isnull = df[col].isnull().mean()
+                if isnull > 0.7:
+                    df.drop(col,inplace=True)
+        
+        for col in df.columns:
+            if (col not in ["target", "case_id", "WEEK_NUM"]) and (df[col].dtype == 'object'):
+                freq = df[col].nunique()
+                if (freq == 1) or (freq > 200):
+                    df.drop(col,inplace=True)
+
+#异常值处理
+def outliers(df, q=0.01):
+    for col in df.columns:
+         if df[col].dtype == 'float32' or df[col].dtype == 'float64':
+            lower_bound = df[col].quantile(q)
+            upper_bound = df[col].quantile(1 - q)
+            df[col].clip(lower_bound, upper_bound, inplace=True)
+
+
+#相关系数特征工程，筛选剔除高相关特征
+def remove_corr(df, threshold=0.8):
+    nums = df.select_dtypes(exclude=['category', 'object']).columns
+    
+    # 如果没有数值列，则直接返回原始 DataFrame
+    if len(nums) == 0:
+        return df
+    df2 = df[nums]
+
+    corr_matrix = df2.corr().abs()
+    # 生成上三角矩阵
+    upper_triangle = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
+    cols_to_remove = set()
+    for col in upper_triangle.columns:
+        # 计算相关列
+        correlated_cols = upper_triangle.index[upper_triangle[col] > threshold].tolist()
+        for correlated_col in correlated_cols:
+            # 对比缺失值数量
+            if df[correlated_col].isnull().sum() < df[col].isnull().sum():
+                cols_to_remove.add(col)
+            else:
+                cols_to_remove.add(correlated_col)
+    cols_to_keep = [col for col in df.columns if col not in cols_to_remove]
+    # 返回删除相关列后的 DataFrame
+    df = df[cols_to_keep]
+    return df
+
+#降低内存占用
+def reduce_mem_usage(df):
+    """ iterate through all the columns of a dataframe and modify the data type
+        to reduce memory usage.        
+    """
+    start_mem = df.memory_usage().sum() / 1024**2
+    print('Memory usage of dataframe is {:.2f} MB'.format(start_mem))
+    
+    for col in df.columns:
+        col_type = df[col].dtype
+        
+        # Skip columns of type 'category'
+        if col_type == "category":
+            continue
+        
+        # Skip columns of type 'datetime'
+        if col_type == "datetime64[ns]":
+            continue
+        
+        if col_type != object:
+            c_min = df[col].min()
+            c_max = df[col].max()
+            if str(col_type)[:3] == 'int':
+                if c_min > np.iinfo(np.int8).min and c_max < np.iinfo(np.int8).max:
+                    df[col] = df[col].astype(np.int8)
+                elif c_min > np.iinfo(np.int16).min and c_max < np.iinfo(np.int16).max:
+                    df[col] = df[col].astype(np.int16)
+                elif c_min > np.iinfo(np.int32).min and c_max < np.iinfo(np.int32).max:
+                    df[col] = df[col].astype(np.int32)
+                elif c_min > np.iinfo(np.int64).min and c_max < np.iinfo(np.int64).max:
+                    df[col] = df[col].astype(np.int64)  
+            else:
+                if c_min > np.finfo(np.float16).min and c_max < np.finfo(np.float16).max:
+                    df[col] = df[col].astype(np.float16)
+                elif c_min > np.finfo(np.float32).min and c_max < np.finfo(np.float32).max:
+                    df[col] = df[col].astype(np.float32)
+                else:
+                    df[col] = df[col].astype(np.float64)
+        else:
+            continue
+            
+    end_mem = df.memory_usage().sum() / 1024**2
+    print('Memory usage after optimization is: {:.2f} MB'.format(end_mem))
+    print('Decreased by {:.1f}%'.format(100 * (start_mem - end_mem) / start_mem))
+    
+    return df
