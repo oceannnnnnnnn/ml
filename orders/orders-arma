@@ -1,0 +1,127 @@
+#automatic model order selection
+!pip install pmdarima
+from statsmodels.tsa.stattools import adfuller, kpss
+from statsmodels.graphics.tsaplots import plot_acf,plot_pacf
+from statsmodels.tsa.arima.model import ARIMA
+import pmdarima as pm
+from datetime import timedelta
+
+#manual model order selection
+def adf_test(series):
+    result = adfuller(series)
+    print('ADF Statistic: %f' % result[0])
+    print('p-value: %f' % result[1])
+    print(f'AIC-LAGS:{result[2]}')
+    kpss_result = kpss(train['orders'], regression='c')
+    print('\nKPSS Statistic:', kpss_result[0])
+    print('p-value:', kpss_result[1])
+    print('Critical Values:', kpss_result[3])
+
+def plot_orders(df):
+    plt.figure(figsize=(20,6))
+    plt.plot(df.index,df)
+    xticks = pd.date_range(start=df.index.min(), end=df.index.max(), freq='MS')  # 每月的第一天
+    plt.xticks(ticks=xticks,rotation=90)
+    plt.show()
+
+#normalization
+mu = np.mean(train['orders'])
+sigma = np.std(train['orders'])
+orig_train_num=train['orders'].copy()
+train['orders']=(train['orders'] - mu) / sigma
+standardized_orders=train['orders'].copy()
+diff_initial=standardized_orders.iloc[0]
+
+#diff
+train['orders']=train['orders'].diff()
+train.dropna(inplace=True)
+
+#variance
+std_30_rolling=train['orders'].rolling(window=7).std()
+train['orders']=train['orders']/std_30_rolling
+train.dropna(inplace=True)
+
+#visualization
+plot_orders(train['orders'])
+
+
+
+#model&prediction
+from sklearn.model_selection import train_test_split
+train_sub,test=train_test_split(train,test_size=0.1,random_state=44,shuffle=False)
+
+#auto_arima
+model=pm.auto_arima(
+    train_sub['orders'][-180:],
+    #train['orders'],
+    #exogenous=exog.loc[train_sub.index],
+    exogenous=exog[-180:],
+    seasonal=True, m=7,
+    stepwise=True, 
+    suppress_warnings=True,
+    trace=True,
+    maxiter=100 
+    #start_p=4,
+    #max_p=7
+)
+print(model.summary())
+
+from statsmodels.tsa.statespace.sarimax import SARIMAX
+model=SARIMAX(train_sub['orders'],order=(2,0,1),
+              #exog=exog.loc[train_sub.index],
+              seasonal_order=(1,0,2,7))
+results=model.fit()
+print(results.summary())
+
+#prediction_autoarima
+forecast,conf_int=model.predict(len(test),return_conf_int=True,
+                                exog=exog.loc[test.index]
+                               )
+forecast_index = pd.date_range(start=train_sub.index[-1] + pd.Timedelta(days=1), periods=len(test), freq='D')
+forecast_df = pd.DataFrame({'Forecast': forecast, 'Lower': conf_int[:, 0], 'Upper': conf_int[:, 1]}, index=forecast_index)
+
+
+#predicton_manual
+forecast = results.get_forecast(steps=len(test),exog=exog.loc[test.index])
+forecast_df=forecast.summary_frame().rename(columns={'mean':'Forecast'})
+
+
+#sliding window predication
+rolling_predictions=test['orders'].copy()
+train_data = pd.Series(train_sub['orders'].copy(),index=train_sub.index)
+window_size=150
+for i, train_end in enumerate(test.index):
+    #train_data=train_data[train_end-timedelta(days=window_size):train_end-timedelta(days=1)]
+    train_data=train_data[:train_end-timedelta(days=1)]
+    model=SARIMAX(train_data,order=(2,0,1),seasonal_order=(1,0,2,7),
+                 #trend='c',
+                  #exog=exog.loc[train_data.index]
+                 )
+    results=model.fit(disp=False)
+    forecast = results.forecast(steps=1)
+    new_data = pd.Series([forecast[0]], index=[train_end])
+    train_data = pd.concat([train_data, new_data])
+    rolling_predictions.iloc[i] = forecast[0]
+
+#recursive prediction
+rolling_predictions=test['orders'].copy()
+for i, train_end in enumerate(test.index):
+    train_data=train['orders'][:train_end-timedelta(days=1)]
+    model=SARIMAX(train_data,order=(2,0,0),seasonal_order=(0,0,3,7),trend='c')
+    results=model.fit()
+    forecast = results.forecast(steps=1)
+    #train_data[train_end]=forecast
+    rolling_predictions.iloc[i] = forecast[0]
+
+
+#visualization
+plt.figure(figsize=(20,6))
+plt.plot(orig_train_num.index,orig_train_num,label='Historical')
+#plt.plot(train.index,train['orders'],label='Historical')
+plt.plot(rolling_predictions.index,rolling_predictions,label='forecast',color='red')
+#plt.fill_between(forecast_df.index,forecast_df['Lower'], forecast_df['Upper'], color='pink', alpha=0.3, label='Confidence Interval')
+plt.legend()
+xmin = train.index[-200]  # 最后一段预测的起始日期
+xmax = rolling_predictions.index[-1]  # 最后一段预测的结束日期
+plt.xlim(xmin, xmax)
+plt.show()
