@@ -1,0 +1,89 @@
+#feature engineering
+for col in train.select_dtypes(include=['object']).columns:
+    train[col]=train[col].astype('category')
+
+
+train['month']=train['date'].dt.month.astype('category')
+train['weekday']=train['date'].dt.weekday.astype('category')
+train['year']=train['date'].dt.year.astype('category')
+train['quarter'] = train['date'].dt.quarter.astype('category')
+train['is_week51'] = (train['date'].dt.isocalendar().week==51).astype(int).astype('category')
+train['is_friday'] = (train['weekday'] == 4).astype(int).astype('category')
+train['is_q3'] = (train['quarter'] == 3).astype(int).astype('category')
+#train['is_Sunday'] = (train['weekday'] == 6).astype(int).astype('category')
+#train['is_Christmaseve'] = ((train['date'].dt.month == 12) & (train['date'].dt.day == 24)).astype(int).astype('category')
+
+
+#model
+import lightgbm as lgb
+from catboost import CatBoostRegressor, Pool
+
+train.set_index('id',inplace=True)
+y_train=train['orders']
+X_train=train.drop(columns=['orders'])
+train.select_dtypes(include=['category','object']).columns
+category=['warehouse', 'month', 'weekday', 'year', 'quarter', 'is_week51',
+       'is_friday', 'is_q3',]
+
+from sklearn.model_selection import train_test_split
+X_train,X_valid,y_train,y_valid=train_test_split(X_train,y_train,test_size=0.2,random_state=44,shuffle=True)
+X_valid,X_test,y_valid,y_test=train_test_split(X_valid,y_valid,test_size=0.5,random_state=44,shuffle=True)
+
+params = {
+    "boosting_type": "gbdt",
+    'objective': 'regression',
+   'max_depth':6,
+'learning_rate':0.05,
+#'subsample_freq':4,
+#'subsample':0.9996037318275165,
+'num_boost_round':1960,
+'reg_alpha':13.995000000000001,
+'reg_lambda':6.125,
+'num_leaves':20,
+'min_child_samples':12,
+#'min_child_weight':0.099,
+    #'min_split_gain':0.43,
+    "random_state": 44,
+    "extra_trees": True,
+    "verbose": -1,
+    #dart_prarms
+    #'drop_rate':0.1,
+    #'skip_drop':0.5,
+    #'uniform_drop':False,
+    #'xgboost_dart_mode':False,
+   
+}
+
+
+#basic_lgbm
+model=lgb.LGBMRegressor(**params)
+model.fit(X_train,y_train,
+          eval_set=[(X_valid,y_valid)],
+          #callbacks=[lgb.log_evaluation(200),lgb.early_stopping(100)],
+          categorical_feature=category,
+          #eval_metric=mape,
+              )
+
+#prediction&metric by differece warehouse
+y_pred=pd.Series(model.predict(X_test),index=X_test.index,name='y_Pred')
+y_test=pd.Series(y_test,index=X_test.index,name='y_true')
+mape(y_test,y_pred)
+
+test1=pd.concat([X_test,y_pred,y_test],axis=1)
+mape_by_warehouse = test1.groupby('warehouse').apply(lambda x: mape(x['y_true'],x['y_Pred']))
+print(mape_by_warehouse)
+
+#visualization
+plt.figure(figsize=(100,10))
+#filtered=train[train["warehouse"]=='Munich_1']
+g = sns.FacetGrid(test_real, col="year", col_wrap=2, height=5, aspect=2)
+g.map_dataframe(sns.lineplot,'month','y_Pred',color='blue',label='pred')
+g.map_dataframe(sns.lineplot,'month','y_true',palette='orange',label='true')
+#g.set_axis_labels("month",) 
+for ax in g.axes.flatten():
+    ax.tick_params(axis='x', which='both', labelbottom=True)  # 强制显示每个子图的 x 轴标签
+    ax.set_xticklabels(ax.get_xticklabels(), rotation=90, ha='right')
+plt.subplots_adjust(hspace=1) 
+g.add_legend()
+
+plt.show()
