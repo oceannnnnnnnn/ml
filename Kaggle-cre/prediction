@@ -3,3 +3,70 @@ import joblib
 fitted_models_cat=joblib.load('/kaggle/input/credic/model49-cat.pkl')
 fitted_models_lgb=joblib.load('/kaggle/input/credic/model49-lgb.pkl')
 encoder=joblib.load('/kaggle/input/credic/encoder.pkl')
+
+#批量处理
+# 定义文件路径列表
+file_paths = ['/kaggle/input/home-credit-credit-risk-model-stability/parquet_files/test/test_credit_bureau_a_2_0.parquet',
+              '/kaggle/input/home-credit-credit-risk-model-stability/parquet_files/test/test_credit_bureau_a_2_1.parquet',
+              '/kaggle/input/home-credit-credit-risk-model-stability/parquet_files/test/test_credit_bureau_a_2_10.parquet',
+              '/kaggle/input/home-credit-credit-risk-model-stability/parquet_files/test/test_credit_bureau_a_2_2.parquet',
+              '/kaggle/input/home-credit-credit-risk-model-stability/parquet_files/test/test_credit_bureau_a_2_3.parquet',
+              '/kaggle/input/home-credit-credit-risk-model-stability/parquet_files/test/test_credit_bureau_a_2_4.parquet',
+              '/kaggle/input/home-credit-credit-risk-model-stability/parquet_files/test/test_credit_bureau_a_2_5.parquet',
+              '/kaggle/input/home-credit-credit-risk-model-stability/parquet_files/test/test_credit_bureau_a_2_6.parquet',
+              '/kaggle/input/home-credit-credit-risk-model-stability/parquet_files/test/test_credit_bureau_a_2_7.parquet',
+              '/kaggle/input/home-credit-credit-risk-model-stability/parquet_files/test/test_credit_bureau_a_2_8.parquet',
+              '/kaggle/input/home-credit-credit-risk-model-stability/parquet_files/test/test_credit_bureau_a_2_9.parquet'
+              
+             ]
+columns = ['case_id','pmts_month_158T',]
+# 定义空 DataFrame 存储最终结果
+bureau2_test = pd.DataFrame()
+
+# 逐个处理数据集并合并
+for file_path in file_paths:
+    # 读取数据集
+    data = pd.read_parquet(file_path,columns=columns)
+    
+    # 对加载的数据进行一系列处理
+    set_table_dtypes(data)
+    transform_cols(data, 'case_id', 'bureau2')  # 为所有数据集设置相同的标识符
+    data.drop_duplicates(subset=['case_id'],inplace=True)
+    data=reduce_usage(data)
+    # 将处理后的数据追加到最终结果中
+    bureau2_test = pd.concat([bureau2_test, data])
+    del data
+    gc.collect()
+
+
+#merge最终全样本数据集
+all1_test=pd.merge(base_test,person1_test,on='case_id',how='left')
+all1_test=pd.merge(all1_test,applprev1_test,on='case_id',how='left')
+all1_test=pd.merge(all1_test,static_test,on='case_id',how='left')
+all1_test=pd.merge(all1_test,stativcv0_test,on='case_id',how='left')
+all1_test=pd.merge(all1_test,tax_test,on='case_id',how='left')
+all1_test=pd.merge(all1_test,bureau_test,on='case_id',how='left')
+all1_test=pd.merge(all1_test,bureau2_test,on='case_id',how='left')
+del base_test,person1_test,applprev1_test,static_test,tax_test,bureau_test,bureau2_test
+
+#进行目标编码
+#目标编码
+col=['empladdr_district_926M','incometype_1044T','education_927M','lastst_736L','lastrejectreason_759M','lastrejectreasonclient_4145040M','credtype_322L']
+X_pretrain_encoded=encoder.transform(all1_test[col])
+X_pretrain_encoded.columns = [f'{col}_encoded' for col in X_pretrain_encoded.columns] 
+all1_test = pd.concat([all1_test, X_pretrain_encoded], axis=1)
+
+
+#读取模型，按权重预测
+#读取模型
+y_pred_lgb= np.zeros(len(X_test))
+y_pred_cat=np.zeros(len(X_test))
+for model in fitted_models_lgb:
+    y_pred_test=model.predict_proba(X_test)[:,1]
+    y_pred_lgb += y_pred_test
+y_pred_lgb /= len(fitted_models_lgb)
+for model in fitted_models_cat:
+    y_pred_test=model.predict_proba(X_test)[:,1]
+    y_pred_cat += y_pred_test
+y_pred_cat /= len(fitted_models_cat)
+y_pred=(y_pred_lgb+y_pred_cat)/2
