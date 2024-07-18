@@ -1,0 +1,5 @@
+#加载模型、编码器
+import joblib
+fitted_models_cat=joblib.load('/kaggle/input/credic/model49-cat.pkl')
+fitted_models_lgb=joblib.load('/kaggle/input/credic/model49-lgb.pkl')
+encoder=joblib.load('/kaggle/input/credic/encoder.pkl')
