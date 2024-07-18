@@ -1,0 +1,160 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+#feature engineering
+def mark_shutdown(row):
+    if row['date'].month ==12 and row['date'].day==25:
+        return 1
+    elif row['date'].weekday()==6:
+        return 1
+    elif row['holiday_name']in\
+    ['Easter Monday', 'Ascension day', 'Corpus Christi','2nd Christmas Day', 'Assumption of the Virgin Mary',
+       'New Years Day', 'Christmas Eve', 'Labour Day', 'Whit sunday','Good Friday', 'German Unity Day', '1st Christmas Day', 'Epiphany',
+       'Whit monday', 'Peace Festival in Augsburg', 'All Saints Day']:
+        return 1
+    else:
+        return 0
+
+#lstm
+import tensorflow as tf
+from sklearn.preprocessing import StandardScaler
+from tensorflow.keras import regularizers
+
+#normalization
+train_norm=train[[ 'school_holidays','holiday','holiday_sunday','month', 'weekday', 'year', 'quarter', 'is_week51', 'is_friday',
+       'is_q3','orders']].values
+scaler=StandardScaler()
+train_norm=scaler.fit_transform(train_norm)
+
+#split dataset
+from sklearn.model_selection import train_test_split
+train_sub,test=train_test_split(train_norm,test_size=0.1,random_state=44,shuffle=False)
+
+
+#timeseries windowing
+def window_dataset(series,window_size,batch_size,shuffle_buffer):
+    dataset=tf.data.Dataset.from_tensor_slices(series)
+    dataset=dataset.window(window_size+1,shift=1,drop_remainder=True)
+    dataset=dataset.flat_map(lambda window:window.batch(window_size +1))
+    dataset=dataset.map(lambda window:(window[:-1,:],window[-1,-1]))
+    dataset=dataset.shuffle(shuffle_buffer)
+    dataset=dataset.batch(batch_size).prefetch(1)
+    return dataset
+
+window_size=60
+batch_size=10
+shuffle_buffer_size=100
+
+tf.keras.backend.clear_session()
+tf.random.set_seed(44)
+np.random.seed(44)
+dataset=window_dataset(train_sub,window_size,batch_size,shuffle_buffer_size)
+
+#lstm-model
+model=tf.keras.models.Sequential([
+    #tf.keras.layers.Lambda(lambda x:tf.expand_dims(x,axis=-1),input_shape=[None]),
+    #tf.keras.layers.LSTM(64,return_sequences=True),
+    #tf.keras.layers.LSTM(64),
+    #tf.keras.layers.Conv1D(128, kernel_size=30, activation='tanh'),
+    tf.keras.layers.Input(shape=[window_size,11]),
+    tf.keras.layers.Bidirectional(tf.keras.layers.LSTM(100,return_sequences=True, 
+                                                       kernel_regularizer=regularizers.l1_l2(l1=0.002, l2=0.001),
+                                                       #kernel_regularizer=regularizers.l1(0.005)
+                                                      )),
+    tf.keras.layers.Bidirectional(tf.keras.layers.LSTM(100,
+                                                       kernel_regularizer=regularizers.l1(0.001),
+                                                       #return_sequences=True
+                                                      )),
+
+
+    tf.keras.layers.Dense(1)
+])
+reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(
+    monitor='loss',    
+    factor=0.7,            
+    patience=10,       
+    min_lr=1e-6,         
+    verbose=1            
+)
+optimizer=tf.keras.optimizers.Adam(learning_rate=0.001)
+model.compile(loss=tf.keras.losses.Huber(),
+             optimizer=optimizer,
+             metrics=[mape])
+history=model.fit(dataset,epochs=200,callbacks=[reduce_lr])
+
+
+#visualization
+loss = history.history['loss']
+
+# plot-loss
+plt.plot(loss, label='Training Loss')
+plt.title('Training Loss')
+plt.xlabel('Epochs')
+plt.ylabel('Loss')
+#plt.xlim(190,250)
+#plt.ylim(0,1)
+plt.legend()
+plt.show()
+
+
+
+#prediction
+#sliding window  prediction
+forecast = []
+for time in range(len(train_norm) - window_size):
+    input_data = train_norm[time:time + window_size]
+    input_data = input_data[np.newaxis, ...]  
+    prediction = model.predict(input_data,verbose=0)
+    forecast.append(prediction[0, 0])  
+forecast = np.array(forecast)
+
+#recursive prediction_muti-features
+forecast=[]
+input_data=train_sub[-window_size:]
+for time in range(len(test)):
+    features=test[time,0:10]
+    input_data_exp= input_data.reshape(1,window_size,11)
+    prediction=model.predict(input_data_exp,verbose=0)
+    forecast.append(prediction[0,0])
+    #prediction = prediction.reshape(-1, 1,1)
+    feature_update = np.concatenate((input_data[1:,0:10],np.expand_dims(features, axis=0)), axis=0)
+    orders_update = np.concatenate((input_data[1:,[10]],prediction.reshape(1, -1)), axis=0)
+    input_data=np.concatenate((feature_update,orders_update),axis=1)
+
+forecast=np.array(forecast)
+
+
+#recursive prediction_no-extra-features
+forecast=[]
+input_data=train_sub[-window_size:]
+for time in range(len(test)):
+    input_data_exp= input_data[np.newaxis,...] 
+    prediction=model.predict(input_data_exp,verbose=0)
+    forecast.append(prediction[0,0])
+    prediction = prediction.reshape(-1, 1)
+    input_data = np.concatenate((input_data[1:, :], prediction), axis=0)
+
+forecast=np.array(forecast)
+
+
+#forecastiong_visualization
+#recursive prediction
+plt.figure(figsize=(15,6))
+x=np.arange(len(test))
+#x=np.arange(len(train_norm[window_size:]))
+#plt.plot(x,train_norm[window_size:])
+plt.plot(x,test[:,10],label='test')
+plt.plot(x,forecast,label='forecast')
+plt.legend()
+#plt.xlim(600,900)
+plt.show()
+
+#sliding window prediction
+plt.figure(figsize=(15,6))
+x=np.arange(len(train_norm[window_size:]))
+plt.plot(x,train_norm[window_size:])
+plt.plot(x,forecast)
+#plt.xlim(800,1000)
+plt.show()
