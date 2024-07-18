@@ -1,0 +1,172 @@
+#optuna超参数调优
+from optuna.samplers import RandomSampler
+import optuna
+def objective(trial):
+    params={
+        "boosting_type": "gbdt",
+        "objective": "binary",
+        "metric": "auc",
+        "max_depth": trial.suggest_int("max_depth", 5,7),
+        "learning_rate": trial.suggest_float("learning_rate", 0.015,0.04),
+        "subsample_freq": trial.suggest_int("subsample_freq", 3, 10),
+        "subsample": trial.suggest_float("subsample", 0.8,0.9),
+        #"num_boost_round": 4500,
+        'num_boost_round': trial.suggest_int('num_boost_roung',2000,4500),
+        "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 0.7),
+        "colsample_bynode": trial.suggest_float("colsample_bynode", 0.5, 0.7),
+        "random_state": 42,
+        "reg_alpha": trial.suggest_float("reg_alpha", 6, 20),
+        "reg_lambda": trial.suggest_float("reg_lambda", 10, 30),
+        "extra_trees": True,
+        "num_leaves": trial.suggest_int("num_leaves", 30, 60),
+        "verbose": -1,
+        "min_child_samples": trial.suggest_int("min_child_samples", 2000, 5000),
+        "min_child_weight": trial.suggest_float("min_child_weight", 0.1, 0.15),
+        'min_split_gain':trial.suggest_float('min_split_gain', 0.1, 0.5),
+        'device':'cpu'
+    }
+    model=lgb.LGBMClassifier(**params)
+    model.fit(X_train,y_train,eval_set=[(X_valid,y_valid)],callbacks=[lgb.log_evaluation(200), lgb.early_stopping(10)],
+              )
+    y_pred = model.predict_proba(X_test)[:, 1]
+    y_pred=pd.Series(y_pred,index=y_test.index)
+    score=stability_metric(y_test,y_pred)
+    wandb.log({'score': score,'auc':model.evals_result_['valid_0']['auc'][-1]})
+    return score
+pruner=optuna.pruners.MedianPruner(
+    n_startup_trials=5, n_warmup_steps=500, interval_steps=1)
+study=optuna.create_study(direction='maximize',pruner=pruner)
+study.optimize(objective,n_trials=70,)
+print('bset trial:')
+best_trial=study.best_trial
+print('Value:{}'.format(best_trial.value))
+print('Params:')
+for key,value in best_trial.params.items():
+    print('{}:{}'.format(key,value))
+
+
+#普通版本
+model=lgb.LGBMClassifier()
+model.fit(X_train,y_train,
+          eval_set=[(X_valid,y_valid)],
+         #callbacks=[wandb_callback()])
+         callbacks=[lgb.log_evaluation(200), lgb.early_stopping(20)])
+#scores=cross_val_score(model,X,y,cv=cv.split(X,y,groups='weeks'),scoring='roc_auc')
+#print(scores)
+
+#cross_val_score交叉验证
+model=lgb.LGBMClassifier(**params)
+scorer=stability_scorer
+cv = StratifiedGroupKFold(n_splits=5, shuffle=False)
+eval_set = [(X_valid, y_valid)]
+cv_scores=cross_val_score(model,X_train,y_train,cv=cv.split(X_train,y_train,groups=X_train['WEEK_NUM']),scoring=scorer,\
+                          fit_params={"eval_set": eval_set,})
+for i,score in enumerate(cv_scores):
+    print(f'fold{i+1} AUC:{score} stability:{scorer}')
+
+
+#分层分组抽样
+y= all1["target"]
+weeks = all1["WEEK_NUM"]
+df_train= all1.drop(columns=["target", "case_id", "WEEK_NUM",'date_decision'])
+cv = StratifiedGroupKFold(n_splits=5, shuffle=False)
+
+#fitted_models_cat = []
+fitted_models_lgb = []
+
+#cv_scores_cat = []
+cv_scores_lgb = []
+
+#stability_results_cat = []
+stability_results_lgb = []
+
+feature_importance_lgb = []
+
+fold = 0
+for idx_train, idx_valid in cv.split(df_train, y,groups=weeks):
+    
+    #df_res_cat = pd.DataFrame()
+    df_res_lgb = pd.DataFrame()
+    
+    X_train, y_train = df_train.iloc[idx_train], y.iloc[idx_train]
+    X_valid, y_valid= df_train.iloc[idx_valid], y.iloc[idx_valid]
+    """
+    df_res_cat['WEEK_NUM'] = list(week_valid)
+    df_res_cat['target'] = list(y_valid)
+    df_res_cat['fold'] = fold
+    """
+    
+    #df_res_lgb['WEEK_NUM'] = list(week_valid)
+    df_res_lgb['target'] = list(y_valid)
+    df_res_lgb['fold'] = fold
+    
+    fold += 1
+    
+    """
+    train_pool = Pool(X_train, y_train,cat_features=cat_cols)
+    val_pool = Pool(X_valid, y_valid,cat_features=cat_cols)
+    
+    clf = CatBoostClassifier(eval_metric='AUC', task_type='GPU', learning_rate=0.03, iterations=n_est)
+    
+    random_seed=3107
+    
+    clf.fit(train_pool, eval_set=val_pool,verbose=300)
+    fitted_models_cat.append(clf)
+    y_pred_valid = clf.predict_proba(X_valid)[:,1]
+    auc_score = roc_auc_score(y_valid, y_pred_valid)
+    cv_scores_cat.append(auc_score)
+    
+    df_res_cat['score'] = list(y_pred_valid)
+    
+    
+    
+    X_train[cat_cols] = X_train[cat_cols].astype("category")
+    X_valid[cat_cols] = X_valid[cat_cols].astype("category")
+    """
+    model = lgb.LGBMClassifier(**params)
+    model.fit(
+        X_train, y_train,
+        eval_set = [(X_valid, y_valid)],
+        #callbacks=[wandb_callback()]
+        callbacks=[lgb.log_evaluation(200), lgb.early_stopping(15),wandb_callback()] 
+    )
+    
+    fitted_models_lgb.append(model)
+    y_pred_valid = model.predict_proba(X_valid)[:,1]
+    #auc指标
+    auc_score = roc_auc_score(y_valid, y_pred_valid)
+    cv_scores_lgb.append(auc_score)
+    #特征重要性
+    fold_importance = model.feature_importances_
+    feature_importance_lgb.append(fold_importance)
+    
+    
+    df_res_lgb['score'] = list(y_pred_valid)
+    
+    #stability_results_cat.append(df_res_cat)
+    stability_results_lgb.append(df_res_lgb)
+
+#计算特征重要性
+avg_feature_importance_lgb = np.mean(feature_importance_lgb, axis=0)
+sorted_idx = np.argsort(avg_feature_importance_lgb)[::-1]
+print('Feature importance ranking')
+for i, idx in enumerate(sorted_idx):
+    print(f"{i + 1}. Feature '{df_train.columns[idx]}' - Importance: {avg_feature_importance_lgb[idx]}")
+
+    
+    
+#print("Catboost CV AUC scores: ", cv_scores_cat)
+#print("Maximum Catboost CV AUC score: ", max(cv_scores_cat))
+
+
+print("Lightgbm CV AUC scores: ", cv_scores_lgb)
+print("Maximum Lightgbm CV AUC score: ", max(cv_scores_lgb))
+
+
+#保存模型
+import joblib
+joblib.dump(fitted_models_lgb,'model37.pkl')
+#保存编码器
+import joblib
+joblib.dump(encoder,'encoder.pkl')
+              
